@@ -1,0 +1,274 @@
+//! Configuration loading and management
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use crate::error::{ConfigError, Result};
+
+/// Main configuration structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub listen: ListenConfig,
+    #[serde(default = "default_secrets_dir")]
+    pub secrets_dir: PathBuf,
+    pub services: HashMap<String, ServiceConfig>,
+}
+
+fn default_secrets_dir() -> PathBuf {
+    PathBuf::from("secrets")
+}
+
+/// Listen address configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListenConfig {
+    #[serde(default = "default_host")]
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+}
+
+fn default_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_port() -> u16 {
+    8080
+}
+
+/// Service configuration for upstream API routing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceConfig {
+    pub prefix: String,
+    pub upstream: String,
+    pub secret: String,
+    pub auth_header: String,
+    pub auth_format: String,
+}
+
+impl Config {
+    /// Load configuration from the default location or specified path.
+    /// If no path is specified, looks for ~/.config/clawproxy/config.yaml
+    /// If the config file doesn't exist, returns default configuration.
+    pub fn load(path: Option<&Path>) -> Result<Self> {
+        let config_path = match path {
+            Some(p) => p.to_path_buf(),
+            None => Self::default_config_path()?,
+        };
+
+        if !config_path.exists() {
+            tracing::debug!(
+                path = %config_path.display(),
+                "Config file not found, using defaults"
+            );
+            return Ok(Self::default());
+        }
+
+        tracing::debug!(path = %config_path.display(), "Loading config");
+        let content = fs::read_to_string(&config_path)?;
+        let config: Config = serde_yaml::from_str(&content)?;
+
+        Ok(config)
+    }
+
+    /// Get the default configuration file path
+    pub fn default_config_path() -> Result<PathBuf> {
+        let config_dir = dirs::config_dir()
+            .ok_or_else(|| ConfigError::Invalid("Could not determine config directory".into()))?;
+        Ok(config_dir.join("clawproxy").join("config.yaml"))
+    }
+
+    /// Get the default configuration directory path
+    pub fn default_config_dir() -> Result<PathBuf> {
+        let config_dir = dirs::config_dir()
+            .ok_or_else(|| ConfigError::Invalid("Could not determine config directory".into()))?;
+        Ok(config_dir.join("clawproxy"))
+    }
+
+    /// Get the absolute path to the secrets directory.
+    /// If secrets_dir is relative, resolves against config directory.
+    pub fn secrets_dir(&self) -> PathBuf {
+        if self.secrets_dir.is_absolute() {
+            self.secrets_dir.clone()
+        } else {
+            // Resolve relative to config directory
+            Self::default_config_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(&self.secrets_dir)
+        }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        let mut services = HashMap::new();
+
+        services.insert(
+            "openai".to_string(),
+            ServiceConfig {
+                prefix: "/openai".to_string(),
+                upstream: "https://api.openai.com".to_string(),
+                secret: "openai".to_string(),
+                auth_header: "Authorization".to_string(),
+                auth_format: "Bearer {secret}".to_string(),
+            },
+        );
+
+        services.insert(
+            "anthropic".to_string(),
+            ServiceConfig {
+                prefix: "/anthropic".to_string(),
+                upstream: "https://api.anthropic.com".to_string(),
+                secret: "anthropic".to_string(),
+                auth_header: "x-api-key".to_string(),
+                auth_format: "{secret}".to_string(),
+            },
+        );
+
+        Self {
+            listen: ListenConfig {
+                host: default_host(),
+                port: default_port(),
+            },
+            secrets_dir: default_secrets_dir(),
+            services,
+        }
+    }
+}
+
+// ============================================================================
+// Secrets Loading (Task 2.2)
+// ============================================================================
+
+/// Load a single secret from the secrets directory
+pub fn load_secret(secrets_dir: &Path, name: &str) -> Result<String> {
+    let secret_path = secrets_dir.join(name);
+
+    if !secret_path.exists() {
+        return Err(ConfigError::SecretNotFound(name.to_string()).into());
+    }
+
+    let secret = fs::read_to_string(&secret_path)?;
+    Ok(secret.trim().to_string())
+}
+
+/// Load all secrets required by the configured services
+pub fn load_all_secrets(secrets_dir: &Path, config: &Config) -> Result<HashMap<String, String>> {
+    if !secrets_dir.exists() {
+        return Err(ConfigError::SecretsDirectoryNotFound(secrets_dir.to_path_buf()).into());
+    }
+
+    // Check permissions on secrets directory
+    check_secrets_dir_permissions(secrets_dir);
+
+    let mut secrets = HashMap::new();
+
+    for service in config.services.values() {
+        if secrets.contains_key(&service.secret) {
+            continue; // Already loaded this secret
+        }
+
+        let secret = load_secret(secrets_dir, &service.secret)?;
+        secrets.insert(service.secret.clone(), secret);
+    }
+
+    Ok(secrets)
+}
+
+/// Check if secrets directory has appropriate permissions (mode 700)
+fn check_secrets_dir_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if let Ok(metadata) = fs::metadata(path) {
+            let mode = metadata.permissions().mode();
+            // Check if group or others have any permissions
+            if mode & 0o077 != 0 {
+                tracing::warn!(
+                    path = %path.display(),
+                    mode = format!("{:o}", mode & 0o777),
+                    "Secrets directory has permissive permissions, should be 700"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_default_config() {
+        let config = Config::default();
+        assert_eq!(config.listen.host, "127.0.0.1");
+        assert_eq!(config.listen.port, 8080);
+        assert!(config.services.contains_key("openai"));
+        assert!(config.services.contains_key("anthropic"));
+    }
+
+    #[test]
+    fn test_load_config_from_file() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+
+        fs::write(
+            &config_path,
+            r#"
+listen:
+  host: "0.0.0.0"
+  port: 9000
+secrets_dir: "/custom/secrets"
+services:
+  test:
+    prefix: "/test"
+    upstream: "https://test.example.com"
+    secret: "test_key"
+    auth_header: "Authorization"
+    auth_format: "Bearer {secret}"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(config.listen.host, "0.0.0.0");
+        assert_eq!(config.listen.port, 9000);
+        assert_eq!(config.services.len(), 1);
+        assert!(config.services.contains_key("test"));
+    }
+
+    #[test]
+    fn test_load_secret() {
+        let dir = TempDir::new().unwrap();
+        let secret_path = dir.path().join("test_secret");
+        fs::write(&secret_path, "my-secret-value\n").unwrap();
+
+        let secret = load_secret(dir.path(), "test_secret").unwrap();
+        assert_eq!(secret, "my-secret-value"); // Trimmed
+    }
+
+    #[test]
+    fn test_load_secret_not_found() {
+        let dir = TempDir::new().unwrap();
+        let result = load_secret(dir.path(), "nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_secrets_dir_relative_path() {
+        let config = Config::default();
+        let secrets_dir = config.secrets_dir();
+        assert!(secrets_dir.is_absolute());
+    }
+
+    #[test]
+    fn test_secrets_dir_absolute_path() {
+        let mut config = Config::default();
+        config.secrets_dir = PathBuf::from("/absolute/path/secrets");
+        let secrets_dir = config.secrets_dir();
+        assert_eq!(secrets_dir, PathBuf::from("/absolute/path/secrets"));
+    }
+}
