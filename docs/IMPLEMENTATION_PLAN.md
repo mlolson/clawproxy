@@ -16,7 +16,7 @@ Supports macOS and Linux out of the box, no Docker required.
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                                                                             │
-│   $ clawproxy-run ./openclaw --task "do something"                          │
+│   $ clawproxy-run ./openclaw gateway                          │
 │                                                                             │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
 │  │  LAUNCHER (clawproxy-run)                                             │  │
@@ -93,6 +93,9 @@ clawproxy-run ./openclaw --task "build me a website"
 # Or run any command sandboxed
 clawproxy-run python my_agent.py
 clawproxy-run npm run agent
+
+# Configure existing openclaw installation
+clawproxy configure-openclaw
 ```
 
 ---
@@ -560,7 +563,20 @@ services:
 - Create ~/.config/clawproxy/ directory
 - Create secrets/ subdirectory with mode 700
 - Write default config.yaml
-- Print next steps
+- Create OS-specific service files:
+  - macOS: Write ~/Library/LaunchAgents/ai.clawproxy.plist
+    - RunAtLoad: true
+    - KeepAlive: true
+    - ProgramArguments: [/path/to/clawproxy, start]
+    - StandardOutPath/StandardErrorPath for logging
+  - Linux: Write ~/.config/systemd/user/clawproxy.service
+    - ExecStart=/path/to/clawproxy start
+    - Restart=on-failure
+    - WantedBy=default.target
+- Register/enable the service (but don't start):
+  - macOS: launchctl load (with disabled flag or just inform user)
+  - Linux: systemctl --user daemon-reload && systemctl --user enable clawproxy
+- Print next steps (including how to start the service)
 ```
 
 #### Task 5.2: Implement `clawproxy secret set <n>`
@@ -593,6 +609,62 @@ services:
 - Show listen address
 - Show loaded services
 - Test connectivity
+```
+
+#### Task 5.7: Implement `clawproxy configure-openclaw`
+```
+Prerequisites:
+- OpenClaw must already be installed and its daemon service configured
+- ClawProxy must be initialized (`clawproxy init` already run)
+
+Steps:
+
+Part A: Update OpenClaw Configuration
+1. Locate OpenClaw config file (~/.openclaw/openclaw.json)
+2. Verify it exists (error if not: "OpenClaw config not found. Run 'openclaw onboard' first.")
+3. Back up original (~/.openclaw/openclaw.json.pre-clawproxy)
+4. Parse the JSON and for each provider in models.providers:
+   - If apiKey contains a real key (not already PROXY:xxx):
+     - Prompt: "Found [provider] API key. Migrate to ClawProxy? [Y/n]"
+     - If yes: Save to clawproxy secrets (clawproxy secret set [provider])
+   - Update baseUrl to http://127.0.0.1:8080/[provider]
+   - Update apiKey to PROXY:[provider]
+5. Write modified config
+6. Check for credentials in other locations:
+   - ~/.openclaw/credentials/oauth.json
+   - Warn user if real keys found: "Found keys in oauth.json - remove manually after verifying integration works"
+
+Part B: Modify Daemon Service
+7. Detect OS (macOS vs Linux)
+8. Locate OpenClaw's service file:
+   - macOS: ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+   - Linux: ~/.config/systemd/user/openclaw-gateway.service
+9. Verify the file exists (error if not: "OpenClaw daemon not found.")
+10. Back up the original file (.pre-clawproxy)
+11. Parse and modify:
+    - macOS: Prepend clawproxy-run to ProgramArguments array
+    - Linux: Prepend clawproxy-run to ExecStart line
+12. Add service dependency:
+    - macOS: (launchd doesn't support dependencies well, rely on KeepAlive retry)
+    - Linux: Add After=clawproxy.service and Requires=clawproxy.service to [Unit]
+13. Write modified file
+14. Reload the service:
+    - macOS: launchctl unload && launchctl load
+    - Linux: systemctl --user daemon-reload && systemctl --user restart openclaw-gateway
+
+Part C: Verification
+15. Verify ClawProxy is running (warn if not)
+16. Verify sandbox is active (test that secrets dir is blocked)
+17. Print summary:
+    - Files modified (with backup locations)
+    - Secrets migrated
+    - Next steps / verification commands
+
+Flags:
+- --dry-run: Show what would be changed without modifying files
+- --revert: Restore all files from .pre-clawproxy backups
+- --skip-config: Only modify daemon, don't touch openclaw.json
+- --skip-daemon: Only modify config, don't touch service file
 ```
 
 ### Phase 6: Testing
@@ -862,6 +934,359 @@ bash
 Landlock has good examples in the crate docs—the "allow everything except X" pattern is documented
 
 
+
+---
+
+## ClawProxy + OpenClaw Integration
+
+### Overview
+
+This section describes how to integrate ClawProxy with OpenClaw to protect API credentials from prompt injection attacks while maintaining OpenClaw's existing functionality.
+
+---
+
+### Quick Start
+
+**Prerequisites:** OpenClaw must already be installed and configured (`openclaw onboard` completed).
+
+```bash
+# 1. Initialize ClawProxy
+clawproxy init
+
+# 2. Integrate with OpenClaw (migrates keys, updates configs, modifies daemon)
+clawproxy configure-openclaw
+
+# 3. Start ClawProxy
+clawproxy start
+# Or: launchctl load ~/Library/LaunchAgents/ai.clawproxy.plist (macOS)
+# Or: systemctl --user start clawproxy (Linux)
+
+# 4. Verify
+clawproxy configure-openclaw --dry-run  # Should show "already configured"
+openclaw health                          # Should work normally
+```
+
+The `configure-openclaw` command handles everything:
+- Migrates existing API keys from OpenClaw config to ClawProxy secrets (with prompts)
+- Updates `~/.openclaw/openclaw.json` to route through the proxy
+- Modifies the OpenClaw daemon to run under `clawproxy-run` sandbox
+- Reloads the daemon service
+
+---
+
+### 1. What the Integration Changes (Reference)
+
+#### Provider Configuration
+
+The `configure-openclaw` command modifies `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "models": {
+    "providers": {
+      "anthropic": {
+        "baseUrl": "http://127.0.0.1:8080/anthropic",
+        "apiKey": "PROXY:anthropic"
+      },
+      "openai": {
+        "baseUrl": "http://127.0.0.1:8080/openai",
+        "apiKey": "PROXY:openai"
+      }
+    }
+  },
+  "agent": {
+    "model": "anthropic/claude-sonnet-4-5"
+  }
+}
+```
+
+**Key points:**
+- `baseUrl` points to ClawProxy instead of the provider's API
+- `apiKey` uses placeholder tokens (`PROXY:xxx`) - the real keys are in ClawProxy's secrets
+- Original config backed up to `~/.openclaw/openclaw.json.pre-clawproxy`
+
+**How the auth header works:**
+
+OpenClaw's provider SDKs automatically add auth headers using the configured `apiKey` value. For example, with `apiKey: "PROXY:openai"`:
+
+1. OpenClaw's OpenAI SDK sends: `Authorization: Bearer PROXY:openai`
+2. ClawProxy intercepts this request (via the modified `baseUrl`)
+3. ClawProxy substitutes the placeholder: `PROXY:openai` → `sk-xxxxxxxx`
+4. ClawProxy forwards to `https://api.openai.com` with the real key
+
+No additional configuration is needed - the placeholder token flows through the existing auth mechanism.
+
+#### Credential Migration
+
+The configure-openclaw command will prompt to migrate any existing keys it finds:
+```
+Found anthropic API key in openclaw.json. Migrate to ClawProxy? [Y/n]
+```
+
+If you need to add keys manually later:
+```bash
+clawproxy secret set anthropic   # Enter your Anthropic key
+clawproxy secret set openai      # Enter your OpenAI key
+```
+
+---
+
+### 2. Daemon Service Modification (Reference)
+
+The `configure-openclaw` command modifies the daemon configuration so the sandbox persists across restarts. This is necessary because the daemon restarts the gateway process on crashes and reboots.
+
+**Why this matters:** If you only run `clawproxy-run` manually, the daemon will restart the process *without* the sandbox.
+
+**Reverting:** Use `clawproxy configure-openclaw --revert` to restore original files from `.pre-clawproxy` backups.
+
+**macOS (launchd):**
+
+The OpenClaw gateway plist (`~/Library/LaunchAgents/ai.openclaw.gateway.plist`) is modified:
+
+```xml
+<!-- Before -->
+<key>ProgramArguments</key>
+<array>
+    <string>/usr/local/bin/node</string>
+    <string>/path/to/openclaw/dist/index.js</string>
+    <string>gateway</string>
+    <string>--port</string>
+    <string>18789</string>
+</array>
+
+<!-- After -->
+<key>ProgramArguments</key>
+<array>
+    <string>/usr/local/bin/clawproxy-run</string>
+    <string>/usr/local/bin/node</string>
+    <string>/path/to/openclaw/dist/index.js</string>
+    <string>gateway</string>
+    <string>--port</string>
+    <string>18789</string>
+</array>
+```
+
+**Linux (systemd):**
+
+The OpenClaw service (`~/.config/systemd/user/openclaw-gateway.service`) is modified:
+
+```ini
+# Before
+[Service]
+ExecStart=/usr/local/bin/node /path/to/openclaw/dist/index.js gateway --port 18789
+
+# After
+[Unit]
+After=clawproxy.service
+Requires=clawproxy.service
+
+[Service]
+ExecStart=/usr/local/bin/clawproxy-run /usr/local/bin/node /path/to/openclaw/dist/index.js gateway --port 18789
+```
+
+---
+
+### 3. Docker Sandbox Considerations
+
+When OpenClaw uses Docker for tool sandboxing, the containers need to reach ClawProxy on the host.
+
+#### Network Access
+
+Docker containers can reach host services via `host.docker.internal` (macOS/Windows) or the host's IP on the `docker0` bridge (Linux).
+
+**Option A: Configure OpenClaw to use host.docker.internal**
+
+If OpenClaw's Docker sandbox inherits the proxy environment or makes its own API calls:
+
+```json
+{
+  "models": {
+    "providers": {
+      "anthropic": {
+        "baseUrl": "http://host.docker.internal:8080/anthropic",
+        "apiKey": "PROXY:anthropic"
+      }
+    }
+  }
+}
+```
+
+**Option B: ClawProxy binds to all interfaces**
+
+If containers can't resolve `host.docker.internal`, configure ClawProxy to listen on `0.0.0.0`:
+
+```yaml
+# ~/.config/clawproxy/config.yaml
+listen:
+  host: "0.0.0.0"  # Instead of 127.0.0.1
+  port: 8080
+```
+
+**Security note:** Only do this on trusted networks. Consider firewall rules to restrict access.
+
+#### Sandbox Isolation
+
+The ClawProxy secrets directory (`~/.config/clawproxy/secrets/`) should NOT be mounted into Docker containers. Verify OpenClaw's sandbox config doesn't expose this path.
+
+---
+
+### 4. Startup Order and Dependencies
+
+ClawProxy must be running before OpenClaw starts, otherwise API requests will fail.
+
+#### Recommended Service Dependencies
+
+The `clawproxy init` command creates the necessary service files automatically:
+
+**macOS (launchd):**
+
+ClawProxy service file (`~/Library/LaunchAgents/ai.clawproxy.plist`) is created by `clawproxy init`:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.clawproxy</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/clawproxy</string>
+        <string>start</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/clawproxy.log</string>
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/clawproxy.log</string>
+</dict>
+</plist>
+```
+
+Add dependency to OpenClaw's plist so it waits for ClawProxy:
+```xml
+<key>RunAtLoad</key>
+<true/>
+<key>KeepAlive</key>
+<dict>
+    <key>NetworkState</key>
+    <true/>
+</dict>
+```
+
+**Linux (systemd):**
+
+ClawProxy service file (`~/.config/systemd/user/clawproxy.service`) is created by `clawproxy init`:
+```ini
+[Unit]
+Description=ClawProxy - Credential injection proxy for AI agents
+
+[Service]
+ExecStart=/usr/local/bin/clawproxy start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Add dependency to OpenClaw's service file:
+```ini
+# openclaw-gateway.service
+[Unit]
+After=clawproxy.service
+Requires=clawproxy.service
+
+[Service]
+ExecStart=/usr/local/bin/clawproxy-run /usr/local/bin/node /path/to/openclaw/dist/index.js gateway --port 18789
+```
+
+**Starting the services:**
+```bash
+# macOS
+launchctl load ~/Library/LaunchAgents/ai.clawproxy.plist
+
+# Linux
+systemctl --user start clawproxy
+```
+
+#### Manual Startup
+
+```bash
+# Terminal 1 (or run as service)
+clawproxy start
+
+# Terminal 2: Run gateway manually with sandbox
+clawproxy-run openclaw gateway --port 18789
+
+# Or restart the daemon service (if using launchd/systemd)
+# macOS: via OpenClaw app or launchctl
+# Linux: systemctl --user restart openclaw-gateway
+```
+
+---
+
+### 5. Verification
+
+#### Test ClawProxy is Running
+
+```bash
+curl http://127.0.0.1:8080/health
+# Should return OK or similar
+```
+
+#### Test Sandbox is Applied
+
+```bash
+# This should fail with "Operation not permitted"
+clawproxy-run cat ~/.config/clawproxy/secrets/anthropic
+```
+
+#### Test OpenClaw Integration
+
+```bash
+# Check gateway health
+openclaw health
+
+# Or send a test message via the agent command
+openclaw agent --message "Say hello"
+# Should work normally - API calls are proxied through ClawProxy
+```
+
+#### Verify No Real Keys in OpenClaw
+
+```bash
+# Check for any leaked keys
+grep -r "sk-" ~/.openclaw/
+# Should only find PROXY:xxx placeholders, not real keys
+```
+
+---
+
+### 6. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| "Connection refused" errors | ClawProxy not running | Start `clawproxy start` first |
+| "PROXY:xxx is not a valid API key" | Upstream receiving placeholder | Check baseUrl points to ClawProxy, not provider |
+| OpenClaw can read secrets | Sandbox not applied | Verify daemon runs via `clawproxy-run` |
+| Docker tools fail to call APIs | Can't reach host proxy | Use `host.docker.internal` or bind to 0.0.0.0 |
+
+---
+
+### Open Questions for Integration
+
+1. **OpenClaw's exact credential paths**: Need to verify all locations where OpenClaw might store/read API keys to ensure they're migrated to ClawProxy.
+
+2. **OAuth flow**: OpenClaw supports OAuth for Anthropic/OpenAI subscriptions. Does this flow work through a proxy, or does it need special handling?
+
+3. **`openclaw onboard` modifications**: Should ClawProxy integration be part of onboarding, or a separate setup step?
+
+4. **Graceful degradation**: If ClawProxy isn't running, should OpenClaw fail fast or provide a helpful error message?
+
+---
 
 ## Open Questions
 
