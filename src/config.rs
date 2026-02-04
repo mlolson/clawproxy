@@ -1,9 +1,11 @@
 //! Configuration loading and management
 
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use url::Host;
 
 use crate::error::{ConfigError, Result};
 
@@ -48,6 +50,74 @@ pub struct ServiceConfig {
 }
 
 impl Config {
+    pub fn validate(&self) -> Result<()> {
+        // Validate listen config
+        self.validate_listen()?;
+
+        // Validate services
+        self.validate_services()?;
+
+        Ok(())
+    }
+
+    fn validate_listen(&self) -> Result<()> {
+        if !Host::parse(&self.listen.host).is_ok() {
+            return Err(ConfigError::Invalid(
+                format!("Invalid host: {}", self.listen.host)
+            ).into());
+        }
+
+        if self.listen.port < 1 || self.listen.port > 65535 {
+            return Err(ConfigError::Invalid(
+                format!("Invalid port: {}", self.listen.port)
+            ).into());
+        }
+
+        if self.listen.port < 1024 {
+            tracing::warn!(
+                port = self.listen.port,
+                "Port < 1024 may require root privileges"
+            );
+        }
+
+        Ok(())
+    }
+
+    fn validate_services(&self) -> Result<()> {
+        if self.services.is_empty() {
+            return Err(ConfigError::Invalid(
+                "At least one service must be defined".to_string()
+            ).into());
+        }
+
+        let mut prefixes = HashSet::new();
+        for service in self.services.values() {
+            if !service.prefix.starts_with("/") {
+                return Err(ConfigError::Invalid(
+                    format!("Invalid service prefix. Must begin with /: {}", service.prefix)
+                ).into());
+            }
+            if !Url::parse(&service.upstream).is_ok(){
+                return Err(ConfigError::Invalid(
+                    format!("Invalid service upstream. Not a valid url: {}", service.upstream)
+                ).into());
+            }
+            if !service.auth_format.contains("{secret}") {
+                return Err(ConfigError::Invalid(
+                    format!("Invalid service auth_format. Must contain {{secret}}: {}", service.auth_format)
+                ).into());
+            }
+            if prefixes.contains(&service.prefix) {
+                return Err(ConfigError::Invalid(
+                    format!("Duplicate service prefix: {}", service.prefix)
+                ).into());
+            }
+            prefixes.insert(&service.prefix);
+        }
+
+        Ok(())
+    }
+
     /// Load configuration from the default location or specified path.
     /// If no path is specified, looks for ~/.config/clawproxy/config.yaml
     /// If the config file doesn't exist, returns default configuration.
@@ -67,7 +137,8 @@ impl Config {
 
         tracing::debug!(path = %config_path.display(), "Loading config");
         let content = fs::read_to_string(&config_path)?;
-        let config: Config = serde_yaml::from_str(&content)?;
+        let config: Config = serde_yaml::from_str(&content)?;    
+        config.validate()?;
 
         Ok(config)
     }
@@ -159,7 +230,7 @@ pub fn load_all_secrets(secrets_dir: &Path, config: &Config) -> Result<HashMap<S
         return Err(ConfigError::SecretsDirectoryNotFound(secrets_dir.to_path_buf()).into());
     }
 
-    // Check permissions on secrets directory
+    // // Check permissions on secrets directory
     check_secrets_dir_permissions(secrets_dir);
 
     let mut secrets = HashMap::new();
