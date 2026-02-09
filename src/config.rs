@@ -13,6 +13,8 @@ use crate::error::{ConfigError, Result};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub listen: ListenConfig,
+    #[serde(default = "default_config_dir")]
+    pub location: PathBuf,
     #[serde(default = "default_secrets_dir")]
     pub secrets_dir: PathBuf,
     pub services: HashMap<String, ServiceConfig>,
@@ -20,6 +22,12 @@ pub struct Config {
 
 fn default_secrets_dir() -> PathBuf {
     PathBuf::from("secrets")
+}
+
+fn default_config_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".clawproxy")
 }
 
 /// Listen address configuration
@@ -62,15 +70,7 @@ impl Config {
 
     fn validate_listen(&self) -> Result<()> {
         if !Host::parse(&self.listen.host).is_ok() {
-            return Err(ConfigError::Invalid(
-                format!("Invalid host: {}", self.listen.host)
-            ).into());
-        }
-
-        if self.listen.port < 1 || self.listen.port > 65535 {
-            return Err(ConfigError::Invalid(
-                format!("Invalid port: {}", self.listen.port)
-            ).into());
+            return Err(ConfigError::Invalid(format!("Invalid host: {}", self.listen.host)).into());
         }
 
         if self.listen.port < 1024 {
@@ -85,32 +85,40 @@ impl Config {
 
     fn validate_services(&self) -> Result<()> {
         if self.services.is_empty() {
-            return Err(ConfigError::Invalid(
-                "At least one service must be defined".to_string()
-            ).into());
+            return Err(
+                ConfigError::Invalid("At least one service must be defined".to_string()).into(),
+            );
         }
 
         let mut prefixes = HashSet::new();
         for service in self.services.values() {
             if !service.prefix.starts_with("/") {
-                return Err(ConfigError::Invalid(
-                    format!("Invalid service prefix. Must begin with /: {}", service.prefix)
-                ).into());
+                return Err(ConfigError::Invalid(format!(
+                    "Invalid service prefix. Must begin with /: {}",
+                    service.prefix
+                ))
+                .into());
             }
-            if !Url::parse(&service.upstream).is_ok(){
-                return Err(ConfigError::Invalid(
-                    format!("Invalid service upstream. Not a valid url: {}", service.upstream)
-                ).into());
+            if !Url::parse(&service.upstream).is_ok() {
+                return Err(ConfigError::Invalid(format!(
+                    "Invalid service upstream. Not a valid url: {}",
+                    service.upstream
+                ))
+                .into());
             }
             if !service.auth_format.contains("{secret}") {
-                return Err(ConfigError::Invalid(
-                    format!("Invalid service auth_format. Must contain {{secret}}: {}", service.auth_format)
-                ).into());
+                return Err(ConfigError::Invalid(format!(
+                    "Invalid service auth_format. Must contain {{secret}}: {}",
+                    service.auth_format
+                ))
+                .into());
             }
             if prefixes.contains(&service.prefix) {
-                return Err(ConfigError::Invalid(
-                    format!("Duplicate service prefix: {}", service.prefix)
-                ).into());
+                return Err(ConfigError::Invalid(format!(
+                    "Duplicate service prefix: {}",
+                    service.prefix
+                ))
+                .into());
             }
             prefixes.insert(&service.prefix);
         }
@@ -128,16 +136,18 @@ impl Config {
         };
 
         if !config_path.exists() {
-            tracing::debug!(
-                path = %config_path.display(),
-                "Config file not found, using defaults"
-            );
-            return Ok(Self::default());
+            return Err(ConfigError::Invalid(format!(
+                "Config file not found at {}",
+                config_path.to_string_lossy()
+            ))
+            .into());
         }
 
         tracing::debug!(path = %config_path.display(), "Loading config");
-        let content = fs::read_to_string(&config_path)?;
-        let config: Config = serde_yaml::from_str(&content)?;    
+        let content: String = fs::read_to_string(&config_path)?;
+        let mut config: Config = serde_yaml::from_str(&content)?;
+        let config_dir: PathBuf = fs::canonicalize(config_path.parent().unwrap_or(Path::new(".")))?;
+        config.location = config_dir;
         config.validate()?;
 
         Ok(config)
@@ -145,16 +155,12 @@ impl Config {
 
     /// Get the default configuration file path
     pub fn default_config_path() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| ConfigError::Invalid("Could not determine config directory".into()))?;
-        Ok(config_dir.join("clawproxy").join("config.yaml"))
+        Ok(default_config_dir().join("config.yaml"))
     }
 
     /// Get the default configuration directory path
     pub fn default_config_dir() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| ConfigError::Invalid("Could not determine config directory".into()))?;
-        Ok(config_dir.join("clawproxy"))
+        Ok(default_config_dir())
     }
 
     /// Get the absolute path to the secrets directory.
@@ -198,6 +204,7 @@ impl Default for Config {
         );
 
         Self {
+            location: Self::default_config_dir().unwrap_or_else(|_| PathBuf::from(".")),
             listen: ListenConfig {
                 host: default_host(),
                 port: default_port(),

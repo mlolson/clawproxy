@@ -19,7 +19,7 @@ struct Cli {
 
     /// Config file path
     #[arg(short, long)]
-    config: Option<PathBuf>,
+    config_location: Option<PathBuf>,
 
     /// Proxy URL (default: http://127.0.0.1:8080)
     #[arg(long, default_value = "http://127.0.0.1:8080")]
@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Load config to find secrets directory
-    let config = Config::load(cli.config.as_deref())?;
+    let config = Config::load(cli.config_location.as_deref())?;
     let secrets_dir = config.secrets_dir();
 
     // Determine sandbox type for logging
@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Build sandbox config
-    let sandbox_config = sandbox::SandboxConfig::for_secrets(secrets_dir, &cli.proxy);
+    let sandbox_config = sandbox::SandboxConfig::for_secrets(config, &cli.proxy);
 
     // Create and apply sandbox
     let sandbox = sandbox::create_sandbox()?;

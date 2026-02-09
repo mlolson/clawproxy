@@ -26,6 +26,10 @@ pub enum Error {
 
     #[error("JSON parsing error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("Null byte error: {0}")]
+    Nul(#[from] std::ffi::NulError),
+
 }
 
 /// Configuration-related errors
