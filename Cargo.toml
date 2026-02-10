@@ -41,6 +41,7 @@ dirs = "5"
 url = "2.5.8"
 nix = { version = "0.28", features = ["process"] }                     
 futures = "0.3.31"
+rpassword = "7"
 
 # Sandboxing (Linux)
 [target.'cfg(target_os = "linux")'.dependencies]
