@@ -97,6 +97,57 @@ fn list_secrets(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn delete_secret(config: &Config, name: &str, force: bool) -> anyhow::Result<()> {
+    let secrets_dir = config.secrets_dir();
+    let secret_path = secrets_dir.join(name);
+
+    if !secret_path.exists() {
+        anyhow::bail!("Secret '{}' not found", name);
+    }
+
+    // Confirm unless forced
+    if !force {
+        print!("Delete secret '{}'? [y/N] ", name);
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled");
+            return Ok(());
+        }
+    }
+
+    // Check if any services use this secret
+    let config = Config::load(None)?;
+    let used_by: Vec<_> = config.services
+        .iter()
+        .filter(|(_, s)| s.secret == name)
+        .map(|(n, _)| n.as_str())
+        .collect();
+
+    if !used_by.is_empty() && !force {
+        println!("Warning: Secret '{}' is used by services: {}",
+            name, used_by.join(", "));
+        print!("Delete anyway? [y/N] ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled");
+            return Ok(());
+        }
+    }
+
+    fs::remove_file(&secret_path)?;
+    println!("Deleted secret '{}'", name);
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     clawproxy::init_tracing();
@@ -129,13 +180,14 @@ async fn main() -> anyhow::Result<()> {
             }
             SecretCommands::List => {
                 tracing::info!("Listing secrets...");
-                let cfg = clawproxy::config::Config::load(None)?;
+                let cfg: Config = clawproxy::config::Config::load(None)?;
                 return list_secrets(&cfg);
             }
             SecretCommands::Delete { name, force } => {
                 tracing::info!(name = %name, force = force, "Deleting secret");
                 // TODO: Implement in Task 5.4
-                todo!("Implement secret delete command (Task 5.4)")
+                let cfg: Config = clawproxy::config::Config::load(None)?;
+                return delete_secret(&cfg, &name, force);
             }
         },
         Commands::ConfigureOpenclaw { dry_run, revert } => {
