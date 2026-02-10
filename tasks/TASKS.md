@@ -9,19 +9,20 @@ Total: 37 tasks | Claude: 27 (73%) | Human: 10 (27%)
 | ID | Task | Assignee | Dependencies | Status |
 |----|------|----------|--------------|--------|
 | **Phase 1: Project Setup** |||||
-| 1.1 | Initialize Cargo workspace | Claude | - | Open |
-| 1.2 | Set up shared library structure | Claude | 1.1 | Open |
-| 1.3 | Set up logging | Claude | 1.2 | Open |
+| 1.1 | Initialize Cargo workspace | Claude | - | Done |
+| 1.2 | Set up shared library structure | Claude | 1.1 | Done |
+| 1.3 | Set up logging | Claude | 1.2 | Done |
 | **Phase 2: Configuration** |||||
-| 2.1 | Implement config loading | Claude | 1.3 | Open |
-| 2.2 | Implement secrets loading | Claude | 2.1 | Open |
-| 2.3 | Implement config validation | Human | 2.1, 2.2 | Open |
+| 2.1 | Implement config loading | Claude | 1.3 | Done |
+| 2.2 | Implement secrets loading | Claude | 2.1 | Done |
+| 2.3 | Implement config validation | Human | 2.1, 2.2 | Done |
 | **Phase 3: Sandbox Implementation** |||||
-| 3.1 | Define sandbox trait and types | Claude | 1.3 | Open |
-| 3.2 | Implement macOS sandbox | Human | 3.1 | Open |
-| 3.3 | Implement Linux sandbox | Claude | 3.1 | Open |
-| 3.4 | Implement launcher binary | Claude | 3.1, 2.1 | Open |
-| 3.5 | Test sandbox effectiveness | Human | 3.2, 3.3, 3.4 | Open |
+| 3.1 | Define sandbox trait and types | Claude | 1.3 | Done |
+| 3.2 | Implement macOS sandbox | Human | 3.1 | Done |
+| 3.3 | Implement Linux sandbox | Claude | 3.1 | Done |
+| 3.4 | Implement launcher binary | Claude | 3.1, 2.1 | Done |
+| 3.5 | Test sandbox effectiveness on mac | Human | 3.2, 3.3, 3.4 | Open |
+| 3.6 | Test sandbox effectiveness on linux | Human | 3.2, 3.3, 3.4 | Open |
 | **Phase 4: Proxy Implementation** |||||
 | 4.1 | Implement router | Claude | 2.1 | Open |
 | 4.2 | Implement token substitution | Claude | 2.2 | Open |

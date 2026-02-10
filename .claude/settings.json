@@ -1,0 +1,42 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "spp hook:pre-tool-use"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "spp hook:user-prompt"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "spp hook:stop"
+          }
+        ]
+      }
+    ]
+  },
+  "systemPrompt": {
+    "type": "command",
+    "command": "spp hook:system-prompt"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "spp hook:status-line"
+  }
+}

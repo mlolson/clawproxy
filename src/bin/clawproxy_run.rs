@@ -10,15 +10,11 @@ use std::path::PathBuf;
 #[command(version)]
 struct Cli {
     /// Command to run
-    #[arg(required = true)]
+    #[arg(long, short = 'c', required = true)]
     command: String,
 
-    /// Arguments to pass to command
-    #[arg(trailing_var_arg = true)]
-    args: Vec<String>,
-
     /// Config file path
-    #[arg(short, long)]
+    #[arg(long, short = 'l')]
     config_location: Option<PathBuf>,
 
     /// Proxy URL (default: http://127.0.0.1:8080)
@@ -55,13 +51,14 @@ fn main() -> anyhow::Result<()> {
         secrets_dir = %secrets_dir.display(),
         proxy = %cli.proxy,
         command = %cli.command,
-        args = ?cli.args,
         "Launching sandboxed process"
     );
 
+    let args = vec!["-c".to_string(), cli.command.clone()]; 
+
     if cli.no_sandbox {
         tracing::warn!("Running without sandbox protection!");
-        return exec_without_sandbox(&cli.command, &cli.args);
+        return exec_without_sandbox("sh", &args);
     }
 
     // Build sandbox config
@@ -69,7 +66,7 @@ fn main() -> anyhow::Result<()> {
 
     // Create and apply sandbox
     let sandbox = sandbox::create_sandbox()?;
-    let _ = sandbox.exec_sandboxed(&sandbox_config, &cli.command, &cli.args)?;
+    let _ = sandbox.exec_sandboxed(&sandbox_config, "sh", &args)?;
 
     // exec_sandboxed doesn't return on success, so we only get here on error
     unreachable!()
