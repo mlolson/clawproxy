@@ -1,6 +1,8 @@
 //! ClawProxy CLI - Main binary for proxy server and management
 
 use clap::{Parser, Subcommand};
+use clawproxy::config::Config;
+use clawproxy::error::ConfigError;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -14,17 +16,18 @@ struct Cli {
     command: Commands,
 }
 
+struct SecretInfo {
+    name: String,
+    used_by: Vec<String>,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Initialize clawproxy configuration
     Init,
 
     /// Start the proxy server
-    Start {
-        /// Path to config file
-        #[arg(short, long)]
-        config: Option<PathBuf>,
-    },
+    Start,
 
     /// Show proxy status
     Status,
@@ -65,6 +68,35 @@ enum SecretCommands {
     },
 }
 
+fn list_secrets(config: &Config) -> anyhow::Result<()> {
+    let secrets_dir = config.secrets_dir();
+    if !secrets_dir.exists() {
+        return Err(ConfigError::SecretsDirectoryNotFound(secrets_dir).into());
+    }
+    println!("Secrets:");
+    let secrets: Vec<_> = fs::read_dir(&secrets_dir)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let used_by: Vec<String> = config
+                .services
+                .iter()
+                .filter(|(_, s)| s.secret == name)
+                .map(|(n, _)| n.clone())
+                .collect();
+            return SecretInfo { name, used_by };
+        })
+        .collect();
+
+    println!("{:<12} {:<16}", "NAME", "USED BY");
+    for info in &secrets {
+        println!("{:<12} {:<16}", info.name, info.used_by.join(","));
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     clawproxy::init_tracing();
@@ -76,12 +108,11 @@ async fn main() -> anyhow::Result<()> {
             cmd_init()?;
             Ok(())
         }
-        Commands::Start { config } => {
+        Commands::Start => {
             tracing::info!("Starting proxy server...");
-            let cfg = clawproxy::config::Config::load(config.as_deref())?;
+            let cfg = clawproxy::config::Config::load(None)?;
             let secrets_dir = cfg.secrets_dir();
             let secrets = clawproxy::config::load_all_secrets(&secrets_dir, &cfg)?;
-
             let server = clawproxy::proxy::ProxyServer::new(cfg, secrets);
             server.run().await?;
             Ok(())
@@ -98,8 +129,8 @@ async fn main() -> anyhow::Result<()> {
             }
             SecretCommands::List => {
                 tracing::info!("Listing secrets...");
-                // TODO: Implement in Task 5.3 (Human task)
-                todo!("Implement secret list command (Task 5.3)")
+                let cfg = clawproxy::config::Config::load(None)?;
+                return list_secrets(&cfg);
             }
             SecretCommands::Delete { name, force } => {
                 tracing::info!(name = %name, force = force, "Deleting secret");
@@ -170,8 +201,8 @@ fn cmd_init() -> anyhow::Result<()> {
 
 fn create_service_file(config_dir: &Path) -> anyhow::Result<()> {
     // Find clawproxy binary path
-    let bin_path = std::env::current_exe()
-        .unwrap_or_else(|_| PathBuf::from("/usr/local/bin/clawproxy"));
+    let bin_path =
+        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/usr/local/bin/clawproxy"));
 
     if cfg!(target_os = "macos") {
         let plist_dir = dirs::home_dir()

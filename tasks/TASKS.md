@@ -31,28 +31,28 @@ Total: 37 tasks | Claude: 27 (73%) | Human: 10 (27%)
 | 4.5 | Implement response streaming | Claude | 4.4 | Done |
 | 4.6 | Implement error handling | Human | 4.3, 4.4, 4.5 | Done |
 | **Phase 5: CLI Implementation** |||||
-| 5.1 | Implement `clawproxy init` | Claude | 2.1 | Open |
-| 5.2 | Implement `clawproxy secret set` | Claude | 2.2, 5.1 | Open |
-| 5.3 | Implement `clawproxy secret list` | Human | 5.2 | Open |
-| 5.4 | Implement `clawproxy secret delete` | Claude | 5.2 | Open |
+| 5.1 | Implement `clawproxy init` | Claude | 2.1 | Done |
+| 5.2 | Implement `clawproxy secret set` | Claude | 2.2, 5.1 | Done |
+| 5.3 | Implement `clawproxy secret list` | Human | 5.2 | Done |
+| 5.4 | Implement `clawproxy secret delete` | Human | 5.2 | Open |
 | 5.5 | Implement `clawproxy start` | Claude | 4.5, 5.1 | Open |
 | 5.6 | Implement `clawproxy status` | Human | 5.5 | Open |
 | 5.7 | Implement `clawproxy configure-openclaw` | Claude | 5.1, 5.2, 3.4 | Open |
 | **Phase 6: Testing** |||||
 | 6.1 | Unit tests — Config | Claude | 2.3 | Open |
 | 6.2 | Unit tests — Router | Claude | 4.1 | Open |
-| 6.3 | Unit tests — Substitution | Human | 4.2 | Open |
+| 6.3 | Unit tests — Substitution | Claude | 4.2 | Open |
 | 6.4 | Integration tests — Proxy | Claude | 4.6 | Open |
-| 6.5 | Integration tests — Sandbox | Human | 3.5 | Open |
+| 6.5 | Integration tests — Sandbox | Claude | 3.5 | Open |
 | 6.6 | End-to-end tests | Claude | 6.4, 6.5 | Open |
 | **Phase 7: Distribution** |||||
 | 7.1 | Build release binaries | Human | 6.6 | Open |
-| 7.2 | Create install script | Claude | 7.1 | Open |
+| 7.2 | Create install script | Human | 7.1 | Open |
 | 7.3 | Create Homebrew formula | Claude | 7.1 | Open |
 | 7.4 | Document installation | Claude | 7.2, 7.3 | Open |
 | **Phase 8: Documentation** |||||
 | 8.1 | Write README.md | Claude | 5.7 | Open |
-| 8.2 | Write SECURITY.md | Human | 3.5, 6.5 | Open |
+| 8.2 | Write SECURITY.md | Claude | 3.5, 6.5 | Open |
 | 8.3 | Add --help documentation | Claude | 5.7 | Open |
 
 ## Dependency Graph (Critical Path)

@@ -2,7 +2,6 @@
 
 use clap::Parser;
 use clawproxy::{config::Config, sandbox};
-use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "clawproxy-run")]
@@ -12,10 +11,6 @@ struct Cli {
     /// Command to run
     #[arg(long, short = 'c', required = true)]
     command: String,
-
-    /// Config file path
-    #[arg(long, short = 'l')]
-    config_location: Option<PathBuf>,
 
     /// Proxy URL (default: http://127.0.0.1:8080)
     #[arg(long, default_value = "http://127.0.0.1:8080")]
@@ -32,7 +27,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Load config to find secrets directory
-    let config = Config::load(cli.config_location.as_deref())?;
+    let config = Config::load(None)?;
     let secrets_dir = config.secrets_dir();
 
     // Determine sandbox type for logging
