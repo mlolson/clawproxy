@@ -21,7 +21,7 @@ Total: 37 tasks | Claude: 27 (73%) | Human: 10 (27%)
 | 3.2 | Implement macOS sandbox | Human | 3.1 | Done |
 | 3.3 | Implement Linux sandbox | Claude | 3.1 | Done |
 | 3.4 | Implement launcher binary | Claude | 3.1, 2.1 | Done |
-| 3.5 | Test sandbox effectiveness on mac | Human | 3.2, 3.3, 3.4 | Open |
+| 3.5 | Test sandbox effectiveness on mac | Human | 3.2, 3.3, 3.4 | Done |
 | 3.6 | Test sandbox effectiveness on linux | Human | 3.2, 3.3, 3.4 | Open |
 | **Phase 4: Proxy Implementation** |||||
 | 4.1 | Implement router | Claude | 2.1 | Open |
