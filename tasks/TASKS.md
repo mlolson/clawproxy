@@ -24,12 +24,12 @@ Total: 37 tasks | Claude: 27 (73%) | Human: 10 (27%)
 | 3.5 | Test sandbox effectiveness on mac | Human | 3.2, 3.3, 3.4 | Done |
 | 3.6 | Test sandbox effectiveness on linux | Human | 3.2, 3.3, 3.4 | Open |
 | **Phase 4: Proxy Implementation** |||||
-| 4.1 | Implement router | Claude | 2.1 | Open |
-| 4.2 | Implement token substitution | Claude | 2.2 | Open |
-| 4.3 | Implement HTTP server | Claude | 4.1 | Open |
-| 4.4 | Implement request forwarding | Claude | 4.3 | Open |
-| 4.5 | Implement response streaming | Claude | 4.4 | Open |
-| 4.6 | Implement error handling | Human | 4.3, 4.4, 4.5 | Open |
+| 4.1 | Implement router | Claude | 2.1 | Done |
+| 4.2 | Implement token substitution | Claude | 2.2 | Done |
+| 4.3 | Implement HTTP server | Claude | 4.1 | Done |
+| 4.4 | Implement request forwarding | Claude | 4.3 | Done |
+| 4.5 | Implement response streaming | Claude | 4.4 | Done |
+| 4.6 | Implement error handling | Human | 4.3, 4.4, 4.5 | Done |
 | **Phase 5: CLI Implementation** |||||
 | 5.1 | Implement `clawproxy init` | Claude | 2.1 | Open |
 | 5.2 | Implement `clawproxy secret set` | Claude | 2.2, 5.1 | Open |
