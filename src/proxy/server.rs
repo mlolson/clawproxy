@@ -4,6 +4,7 @@ use axum::{
     body::Body,
     extract::State,
     http::{Request, Response, StatusCode},
+    response::IntoResponse,
     Router,
 };
 use futures::StreamExt;
@@ -67,18 +68,10 @@ impl ProxyServer {
 async fn proxy_handler(
     State(state): State<AppState>,
     request: Request<Body>,
-) -> std::result::Result<Response<Body>, StatusCode> {
+) -> Response<Body> {
     match forward_request(&state, request).await {
-        Ok(response) => Ok(response),
-        Err(e) => {
-            tracing::error!(error = %e, "Proxy error");
-            match e {
-                ProxyError::UnknownService(_) => Err(StatusCode::NOT_FOUND),
-                ProxyError::InvalidToken(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-                ProxyError::UpstreamRequest(_) => Err(StatusCode::BAD_GATEWAY),
-                _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
-            }
-        }
+        Ok(response) => response,
+        Err(e) => e.into_response(),
     }
 }
 
@@ -127,7 +120,7 @@ async fn forward_request(
     // Forward the request body
     let body_bytes = axum::body::to_bytes(request.into_body(), 10 * 1024 * 1024)
         .await
-        .map_err(|e| ProxyError::UpstreamRequest(e.to_string()))?;
+        .map_err(|e| ProxyError::BadRequest(e.to_string()))?;
     if !body_bytes.is_empty() {
         req_builder = req_builder.body(body_bytes);
     }
@@ -138,7 +131,7 @@ async fn forward_request(
     let upstream_response = req_builder
         .send()
         .await
-        .map_err(|e| ProxyError::UpstreamRequest(e.to_string()))?;
+        .map_err(ProxyError::from_reqwest)?;
 
     // Convert and return the response
     convert_response(upstream_response).await
