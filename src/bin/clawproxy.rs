@@ -26,8 +26,14 @@ enum Commands {
     /// Initialize clawproxy configuration
     Init,
 
-    /// Start the proxy server
-    Start {
+    /// Start the clawproxy daemon
+    Start,
+
+    /// Stop the clawproxy daemon
+    Stop,
+
+    /// Run the proxy server in the foreground (used by daemon)
+    Serve {
         /// Path to config file
         #[arg(short, long)]
         config: Option<PathBuf>,
@@ -163,8 +169,14 @@ async fn main() -> anyhow::Result<()> {
             cmd_init()?;
             Ok(())
         }
-        Commands::Start { config } => {
-            cmd_start(config).await
+        Commands::Start => {
+            cmd_daemon_start()
+        }
+        Commands::Stop => {
+            cmd_daemon_stop()
+        }
+        Commands::Serve { config } => {
+            cmd_serve(config).await
         }
         Commands::Status => {
             tracing::info!("Checking proxy status...");
@@ -266,7 +278,7 @@ fn create_service_file(config_dir: &Path) -> anyhow::Result<()> {
     <key>ProgramArguments</key>
     <array>
         <string>{bin}</string>
-        <string>start</string>
+        <string>serve</string>
     </array>
     <key>RunAtLoad</key>
     <false/>
@@ -300,7 +312,7 @@ fn create_service_file(config_dir: &Path) -> anyhow::Result<()> {
 Description=ClawProxy credential injection proxy
 
 [Service]
-ExecStart={bin} start
+ExecStart={bin} serve
 Restart=on-failure
 RestartSec=5
 
@@ -394,10 +406,81 @@ fn mask_secret(secret: &str) -> String {
 }
 
 // ============================================================================
-// Task 5.5: clawproxy start
+// Daemon management: start / stop
 // ============================================================================
 
-async fn cmd_start(config_path: Option<PathBuf>) -> anyhow::Result<()> {
+fn plist_path() -> anyhow::Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    Ok(home.join("Library/LaunchAgents/ai.clawproxy.plist"))
+}
+
+fn cmd_daemon_start() -> anyhow::Result<()> {
+    if cfg!(target_os = "macos") {
+        let plist = plist_path()?;
+        if !plist.exists() {
+            anyhow::bail!(
+                "Service file not found at {}\nRun 'clawproxy init' first",
+                plist.display()
+            );
+        }
+        let status = std::process::Command::new("launchctl")
+            .args(["load", "-w"])
+            .arg(&plist)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("launchctl load failed");
+        }
+        println!("ClawProxy daemon started");
+    } else if cfg!(target_os = "linux") {
+        let status = std::process::Command::new("systemctl")
+            .args(["--user", "start", "clawproxy.service"])
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("systemctl start failed");
+        }
+        println!("ClawProxy daemon started");
+    } else {
+        anyhow::bail!("Unsupported platform for daemon management");
+    }
+    Ok(())
+}
+
+fn cmd_daemon_stop() -> anyhow::Result<()> {
+    if cfg!(target_os = "macos") {
+        let plist = plist_path()?;
+        if !plist.exists() {
+            anyhow::bail!(
+                "Service file not found at {}\nRun 'clawproxy init' first",
+                plist.display()
+            );
+        }
+        let status = std::process::Command::new("launchctl")
+            .args(["unload"])
+            .arg(&plist)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("launchctl unload failed");
+        }
+        println!("ClawProxy daemon stopped");
+    } else if cfg!(target_os = "linux") {
+        let status = std::process::Command::new("systemctl")
+            .args(["--user", "stop", "clawproxy.service"])
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("systemctl stop failed");
+        }
+        println!("ClawProxy daemon stopped");
+    } else {
+        anyhow::bail!("Unsupported platform for daemon management");
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Task 5.5: clawproxy serve (foreground, used by daemon)
+// ============================================================================
+
+async fn cmd_serve(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     let config = Config::load(config_path.as_deref())?;
 
     let secrets_dir = config.secrets_dir();
