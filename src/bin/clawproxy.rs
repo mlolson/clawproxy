@@ -579,6 +579,45 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
     let config_content = fs::read_to_string(&openclaw_config_path)?;
     let mut config: serde_json::Value = serde_json::from_str(&config_content)?;
 
+    // Collect model IDs per provider from the OpenClaw config
+    let mut provider_model_ids: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    if let Some(defaults) = config.get("agents")
+        .and_then(|a| a.get("defaults"))
+    {
+        let mut model_refs: Vec<String> = Vec::new();
+        if let Some(primary) = defaults.get("model")
+            .and_then(|m| m.get("primary"))
+            .and_then(|p| p.as_str())
+        {
+            model_refs.push(primary.to_string());
+        }
+        if let Some(fallbacks) = defaults.get("model")
+            .and_then(|m| m.get("fallbacks"))
+            .and_then(|f| f.as_array())
+        {
+            for fb in fallbacks {
+                if let Some(s) = fb.as_str() {
+                    model_refs.push(s.to_string());
+                }
+            }
+        }
+        if let Some(models) = defaults.get("models").and_then(|m| m.as_object()) {
+            for key in models.keys() {
+                model_refs.push(key.clone());
+            }
+        }
+
+        for model_ref in &model_refs {
+            if let Some((provider, model_id)) = model_ref.split_once('/') {
+                provider_model_ids
+                    .entry(provider.to_string())
+                    .or_default()
+                    .push(model_id.to_string());
+            }
+        }
+    }
+
     // Ensure models.providers exists
     if config.get("models").is_none() {
         config.as_object_mut().unwrap().insert(
@@ -600,21 +639,35 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
         let provider_name = service.prefix.trim_start_matches('/');
         let new_base_url = format!("{}{}", proxy_url, service.prefix);
 
-        // Create or update the provider entry with baseUrl
+        // Build models array from discovered model IDs
+        let models_array: Vec<serde_json::Value> = provider_model_ids
+            .get(provider_name)
+            .map(|ids| {
+                let mut seen = std::collections::HashSet::new();
+                ids.iter()
+                    .filter(|id| seen.insert(id.to_string()))
+                    .map(|id| serde_json::json!({ "id": id }))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Create or update the provider entry
         if let Some(existing) = providers.get_mut(provider_name) {
             if let Some(obj) = existing.as_object_mut() {
                 obj.insert(
                     "baseUrl".to_string(),
                     serde_json::Value::String(new_base_url),
                 );
-                if !obj.contains_key("models") {
+                if !models_array.is_empty() {
+                    obj.insert("models".to_string(), serde_json::Value::Array(models_array));
+                } else if !obj.contains_key("models") {
                     obj.insert("models".to_string(), serde_json::json!([]));
                 }
             }
         } else {
             providers.insert(
                 provider_name.to_string(),
-                serde_json::json!({ "baseUrl": new_base_url, "models": [] }),
+                serde_json::json!({ "baseUrl": new_base_url, "models": models_array }),
             );
         }
 
