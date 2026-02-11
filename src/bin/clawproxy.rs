@@ -368,6 +368,20 @@ fn cmd_secret_set(name: &str) -> anyhow::Result<()> {
     let preview = mask_secret(&secret);
     println!("Saved secret '{}' ({})", name, preview);
 
+    // Auto-configure known service if not already in config
+    if let Some(service_config) = clawproxy::config::known_service_config(name) {
+        let config_path = config_dir.join("config.yaml");
+        if config_path.exists() {
+            let mut config: Config = serde_yaml::from_str(&fs::read_to_string(&config_path)?)?;
+            if !config.services.contains_key(name) {
+                config.services.insert(name.to_string(), service_config);
+                let yaml = serde_yaml::to_string(&config)?;
+                fs::write(&config_path, yaml)?;
+                println!("Added '{}' service to config", name);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -391,6 +405,13 @@ async fn cmd_start(config_path: Option<PathBuf>) -> anyhow::Result<()> {
         anyhow::bail!(
             "Secrets directory not found: {}\nRun 'clawproxy init' first",
             secrets_dir.display()
+        );
+    }
+
+    if config.services.is_empty() {
+        anyhow::bail!(
+            "No services configured.\n\
+             Add a service by setting a secret: clawproxy secret set anthropic"
         );
     }
 

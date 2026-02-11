@@ -84,12 +84,6 @@ impl Config {
     }
 
     fn validate_services(&self) -> Result<()> {
-        if self.services.is_empty() {
-            return Err(
-                ConfigError::Invalid("At least one service must be defined".to_string()).into(),
-            );
-        }
-
         let mut prefixes = HashSet::new();
         for service in self.services.values() {
             if !service.prefix.starts_with("/") {
@@ -179,30 +173,6 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let mut services = HashMap::new();
-
-        services.insert(
-            "openai".to_string(),
-            ServiceConfig {
-                prefix: "/openai".to_string(),
-                upstream: "https://api.openai.com".to_string(),
-                secret: "openai".to_string(),
-                auth_header: "Authorization".to_string(),
-                auth_format: "Bearer {secret}".to_string(),
-            },
-        );
-
-        services.insert(
-            "anthropic".to_string(),
-            ServiceConfig {
-                prefix: "/anthropic".to_string(),
-                upstream: "https://api.anthropic.com".to_string(),
-                secret: "anthropic".to_string(),
-                auth_header: "x-api-key".to_string(),
-                auth_format: "{secret}".to_string(),
-            },
-        );
-
         Self {
             location: Self::default_config_dir().unwrap_or_else(|_| PathBuf::from(".")),
             listen: ListenConfig {
@@ -210,8 +180,30 @@ impl Default for Config {
                 port: default_port(),
             },
             secrets_dir: default_secrets_dir(),
-            services,
+            services: HashMap::new(),
         }
+    }
+}
+
+/// Returns the known service config for well-known providers.
+/// Used by `secret set` to auto-configure services.
+pub fn known_service_config(name: &str) -> Option<ServiceConfig> {
+    match name {
+        "anthropic" => Some(ServiceConfig {
+            prefix: "/anthropic".to_string(),
+            upstream: "https://api.anthropic.com".to_string(),
+            secret: "anthropic".to_string(),
+            auth_header: "x-api-key".to_string(),
+            auth_format: "{secret}".to_string(),
+        }),
+        "openai" => Some(ServiceConfig {
+            prefix: "/openai".to_string(),
+            upstream: "https://api.openai.com".to_string(),
+            secret: "openai".to_string(),
+            auth_header: "Authorization".to_string(),
+            auth_format: "Bearer {secret}".to_string(),
+        }),
+        _ => None,
     }
 }
 
@@ -284,8 +276,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.listen.host, "127.0.0.1");
         assert_eq!(config.listen.port, 8080);
-        assert!(config.services.contains_key("openai"));
-        assert!(config.services.contains_key("anthropic"));
+        assert!(config.services.is_empty());
     }
 
     #[test]
