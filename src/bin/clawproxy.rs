@@ -616,6 +616,63 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
 
     let new_content = serde_json::to_string_pretty(&config)?;
 
+    // Process auth-profiles.json
+    let auth_profiles_path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
+        .join(".openclaw/main/agent/auth-profiles.json");
+
+    let mut new_auth_content: Option<String> = None;
+    if auth_profiles_path.exists() {
+        let auth_content = fs::read_to_string(&auth_profiles_path)?;
+        let mut auth_config: serde_json::Value = serde_json::from_str(&auth_content)?;
+
+        if let Some(profiles) = auth_config
+            .get_mut("profiles")
+            .and_then(|p| p.as_object_mut())
+        {
+            for (profile_key, profile_value) in profiles.iter_mut() {
+                if let Some(obj) = profile_value.as_object_mut() {
+                    let existing_token = obj
+                        .get("token")
+                        .and_then(|v| v.as_str())
+                        .filter(|t| !t.is_empty() && *t != "PROXY")
+                        .map(|t| t.to_string());
+
+                    if existing_token.is_none() {
+                        continue;
+                    }
+
+                    // Profile keys are like "anthropic:default"
+                    let provider_name = profile_key.split(':').next().unwrap_or(profile_key);
+
+                    obj.insert(
+                        "token".to_string(),
+                        serde_json::Value::String("PROXY".to_string()),
+                    );
+
+                    if !redirected_providers.contains(&provider_name.to_string()) {
+                        redirected_providers.push(provider_name.to_string());
+                    }
+                    if let Some(token) = existing_token {
+                        if !migrated_keys.iter().any(|(n, _)| n == provider_name) {
+                            migrated_keys.push((provider_name.to_string(), token));
+                        }
+                    }
+                }
+            }
+        }
+
+        new_auth_content = Some(serde_json::to_string_pretty(&auth_config)?);
+    }
+
+    if redirected_providers.is_empty() {
+        println!("No matching providers found between OpenClaw and clawproxy.");
+        println!();
+        println!("OpenClaw providers need a matching clawproxy service.");
+        println!("Add one with: clawproxy secret set <provider>");
+        return Ok(());
+    }
+
     if dry_run {
         for name in &redirected_providers {
             println!("Redirect {} -> {}/{}", name, proxy_url, name);
@@ -626,7 +683,11 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Migrate API keys to clawproxy secrets
+    // Migrate API keys to clawproxy secrets and auto-configure services
+    let config_path = Config::default_config_path()?;
+    let mut clawproxy_config: Config = serde_yaml::from_str(&fs::read_to_string(&config_path)?)?;
+    let mut config_changed = false;
+
     for (provider_name, key) in &migrated_keys {
         let secret_path = secrets_dir.join(provider_name);
         if secret_path.exists() {
@@ -647,11 +708,30 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
                 mask_secret(key)
             );
         }
+
+        // Auto-configure known service if not already present
+        if !clawproxy_config.services.contains_key(provider_name.as_str()) {
+            if let Some(service_config) = clawproxy::config::known_service_config(provider_name) {
+                clawproxy_config.services.insert(provider_name.clone(), service_config);
+                println!("Added '{}' service to config", provider_name);
+                config_changed = true;
+            }
+        }
     }
 
-    // Backup and write config
+    if config_changed {
+        let yaml = serde_yaml::to_string(&clawproxy_config)?;
+        fs::write(&config_path, yaml)?;
+    }
+
+    // Backup and write configs
     backup_file(&openclaw_config_path)?;
     fs::write(&openclaw_config_path, &new_content)?;
+
+    if let Some(auth_content) = &new_auth_content {
+        backup_file(&auth_profiles_path)?;
+        fs::write(&auth_profiles_path, auth_content)?;
+    }
 
     // Modify daemon service file
     modify_daemon_service(dry_run)?;
@@ -689,32 +769,47 @@ fn backup_file(path: &Path) -> anyhow::Result<()> {
 }
 
 fn revert_openclaw_config(openclaw_config_path: &Path) -> anyhow::Result<()> {
-    let backup_path = openclaw_config_path.with_extension(
-        format!(
-            "{}.pre-clawproxy",
-            openclaw_config_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-        ),
-    );
+    let mut reverted_any = false;
 
-    if !backup_path.exists() {
-        anyhow::bail!(
-            "No backup found at {}\nNothing to revert",
-            backup_path.display()
-        );
+    if revert_from_backup(openclaw_config_path)? {
+        reverted_any = true;
     }
 
-    fs::copy(&backup_path, openclaw_config_path)?;
-    fs::remove_file(&backup_path)?;
-    println!("Reverted {}", openclaw_config_path.display());
+    // Also revert auth-profiles.json if backup exists
+    let auth_profiles_path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
+        .join(".openclaw/main/agent/auth-profiles.json");
+    if revert_from_backup(&auth_profiles_path)? {
+        reverted_any = true;
+    }
 
-    // Revert daemon service
+    if !reverted_any {
+        anyhow::bail!("No backups found. Nothing to revert.");
+    }
+
     revert_daemon_service()?;
 
     println!("OpenClaw configuration reverted successfully");
     Ok(())
+}
+
+/// Restores a file from its .pre-clawproxy backup. Returns true if a backup was found.
+fn revert_from_backup(path: &Path) -> anyhow::Result<bool> {
+    let backup_path = path.with_extension(format!(
+        "{}.pre-clawproxy",
+        path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+    ));
+
+    if !backup_path.exists() {
+        return Ok(false);
+    }
+
+    fs::copy(&backup_path, path)?;
+    fs::remove_file(&backup_path)?;
+    println!("Reverted {}", path.display());
+    Ok(true)
 }
 
 fn modify_daemon_service(dry_run: bool) -> anyhow::Result<()> {
