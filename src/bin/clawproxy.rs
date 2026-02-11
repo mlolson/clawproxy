@@ -541,12 +541,13 @@ async fn cmd_serve(config_path: Option<PathBuf>) -> anyhow::Result<()> {
 // ============================================================================
 
 fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
-    let openclaw_config_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
-        .join(".openclaw/openclaw.json");
+    let home = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    let openclaw_config_path = home.join(".openclaw/openclaw.json");
+    let auth_profiles_path = home.join(".openclaw/agents/default/agent/auth-profiles.json");
 
     if revert {
-        return revert_openclaw_config(&openclaw_config_path);
+        return revert_openclaw_config(&openclaw_config_path, &auth_profiles_path);
     }
 
     if !openclaw_config_path.exists() {
@@ -557,7 +558,6 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
         );
     }
 
-    // Ensure clawproxy is initialized
     let clawproxy_config = Config::load(None)?;
     let secrets_dir = clawproxy_config.secrets_dir();
     let proxy_url = format!(
@@ -565,62 +565,62 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
         clawproxy_config.listen.host, clawproxy_config.listen.port
     );
 
-    // Read and parse OpenClaw config
+    if clawproxy_config.services.is_empty() {
+        anyhow::bail!(
+            "No clawproxy services configured.\n\
+             Add one with: clawproxy secret set anthropic"
+        );
+    }
+
+    let mut redirected_providers: Vec<String> = Vec::new();
+    let mut migrated_keys: Vec<(String, String)> = Vec::new();
+
+    // --- 1. Update openclaw.json: add models.providers.<name>.baseUrl ---
     let config_content = fs::read_to_string(&openclaw_config_path)?;
     let mut config: serde_json::Value = serde_json::from_str(&config_content)?;
 
-    let mut migrated_keys: Vec<(String, String)> = Vec::new();
-    let mut redirected_providers: Vec<String> = Vec::new();
+    // Ensure models.providers exists
+    if config.get("models").is_none() {
+        config.as_object_mut().unwrap().insert(
+            "models".to_string(),
+            serde_json::json!({}),
+        );
+    }
+    let models = config.get_mut("models").unwrap().as_object_mut().unwrap();
+    if models.get("providers").is_none() {
+        models.insert("providers".to_string(), serde_json::json!({}));
+    }
+    let providers = models
+        .get_mut("providers")
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
 
-    // Process each provider
-    if let Some(providers) = config
-        .get_mut("models")
-        .and_then(|m| m.get_mut("providers"))
-        .and_then(|p| p.as_object_mut())
-    {
-        for (provider_name, provider_config) in providers.iter_mut() {
-            if let Some(obj) = provider_config.as_object_mut() {
-                let existing_key = obj
-                    .get("apiKey")
-                    .and_then(|v| v.as_str())
-                    .filter(|k| !k.is_empty())
-                    .map(|k| k.to_string());
+    for (service_name, service) in &clawproxy_config.services {
+        let provider_name = service.prefix.trim_start_matches('/');
+        let new_base_url = format!("{}{}", proxy_url, service.prefix);
 
-                let service_prefix = format!("/{}", provider_name);
-
-                let matching_service = clawproxy_config
-                    .services
-                    .values()
-                    .find(|s| s.prefix == service_prefix);
-
-                if let Some(_service) = matching_service {
-                    let new_base_url = format!("{}{}", proxy_url, service_prefix);
-
-                    obj.insert(
-                        "baseUrl".to_string(),
-                        serde_json::Value::String(new_base_url),
-                    );
-                    obj.insert(
-                        "apiKey".to_string(),
-                        serde_json::Value::String("PROXY".to_string()),
-                    );
-
-                    redirected_providers.push(provider_name.clone());
-                    if let Some(key) = existing_key {
-                        migrated_keys.push((provider_name.clone(), key));
-                    }
-                }
+        // Create or update the provider entry with baseUrl
+        if let Some(existing) = providers.get_mut(provider_name) {
+            if let Some(obj) = existing.as_object_mut() {
+                obj.insert(
+                    "baseUrl".to_string(),
+                    serde_json::Value::String(new_base_url),
+                );
             }
+        } else {
+            providers.insert(
+                provider_name.to_string(),
+                serde_json::json!({ "baseUrl": new_base_url }),
+            );
         }
+
+        redirected_providers.push(service_name.clone());
     }
 
     let new_content = serde_json::to_string_pretty(&config)?;
 
-    // Process auth-profiles.json
-    let auth_profiles_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
-        .join(".openclaw/main/agent/auth-profiles.json");
-
+    // --- 2. Scan auth-profiles.json for tokens to migrate ---
     let mut new_auth_content: Option<String> = None;
     if auth_profiles_path.exists() {
         let auth_content = fs::read_to_string(&auth_profiles_path)?;
@@ -632,30 +632,40 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
         {
             for (profile_key, profile_value) in profiles.iter_mut() {
                 if let Some(obj) = profile_value.as_object_mut() {
-                    let existing_token = obj
-                        .get("token")
+                    // Check for token or key fields
+                    let token_field = if obj.get("token").and_then(|v| v.as_str()).is_some() {
+                        Some("token")
+                    } else if obj.get("key").and_then(|v| v.as_str()).is_some() {
+                        Some("key")
+                    } else {
+                        None
+                    };
+
+                    let Some(field) = token_field else {
+                        continue;
+                    };
+
+                    let existing_value = obj
+                        .get(field)
                         .and_then(|v| v.as_str())
                         .filter(|t| !t.is_empty() && *t != "PROXY")
                         .map(|t| t.to_string());
 
-                    if existing_token.is_none() {
+                    if existing_value.is_none() {
                         continue;
                     }
 
-                    // Profile keys are like "anthropic:default"
-                    let provider_name = profile_key.split(':').next().unwrap_or(profile_key);
+                    let provider_name =
+                        profile_key.split(':').next().unwrap_or(profile_key);
 
                     obj.insert(
-                        "token".to_string(),
+                        field.to_string(),
                         serde_json::Value::String("PROXY".to_string()),
                     );
 
-                    if !redirected_providers.contains(&provider_name.to_string()) {
-                        redirected_providers.push(provider_name.to_string());
-                    }
-                    if let Some(token) = existing_token {
+                    if let Some(value) = existing_value {
                         if !migrated_keys.iter().any(|(n, _)| n == provider_name) {
-                            migrated_keys.push((provider_name.to_string(), token));
+                            migrated_keys.push((provider_name.to_string(), value));
                         }
                     }
                 }
@@ -665,34 +675,23 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
         new_auth_content = Some(serde_json::to_string_pretty(&auth_config)?);
     }
 
-    if redirected_providers.is_empty() {
-        println!("No matching providers found between OpenClaw and clawproxy.");
-        println!();
-        println!("OpenClaw providers need a matching clawproxy service.");
-        println!("Add one with: clawproxy secret set <provider>");
-        return Ok(());
-    }
-
+    // --- Summary ---
     if dry_run {
         for name in &redirected_providers {
             println!("Redirect {} -> {}/{}", name, proxy_url, name);
         }
         for (name, _) in &migrated_keys {
-            println!("Migrate {} API key to clawproxy secret", name);
+            println!("Migrate {} token to clawproxy secret", name);
         }
         return Ok(());
     }
 
-    // Migrate API keys to clawproxy secrets and auto-configure services
-    let config_path = Config::default_config_path()?;
-    let mut clawproxy_config: Config = serde_yaml::from_str(&fs::read_to_string(&config_path)?)?;
-    let mut config_changed = false;
-
+    // --- 3. Migrate tokens to clawproxy secrets ---
     for (provider_name, key) in &migrated_keys {
         let secret_path = secrets_dir.join(provider_name);
         if secret_path.exists() {
             println!(
-                "Secret '{}' already exists, skipping key migration",
+                "Secret '{}' already exists, skipping token migration",
                 provider_name
             );
         } else {
@@ -703,28 +702,14 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
                 fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600))?;
             }
             println!(
-                "Migrated API key for '{}' to clawproxy secret ({})",
+                "Migrated token for '{}' to clawproxy secret ({})",
                 provider_name,
                 mask_secret(key)
             );
         }
-
-        // Auto-configure known service if not already present
-        if !clawproxy_config.services.contains_key(provider_name.as_str()) {
-            if let Some(service_config) = clawproxy::config::known_service_config(provider_name) {
-                clawproxy_config.services.insert(provider_name.clone(), service_config);
-                println!("Added '{}' service to config", provider_name);
-                config_changed = true;
-            }
-        }
     }
 
-    if config_changed {
-        let yaml = serde_yaml::to_string(&clawproxy_config)?;
-        fs::write(&config_path, yaml)?;
-    }
-
-    // Backup and write configs
+    // --- 4. Write modified files ---
     backup_file(&openclaw_config_path)?;
     fs::write(&openclaw_config_path, &new_content)?;
 
@@ -733,21 +718,9 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
         fs::write(&auth_profiles_path, auth_content)?;
     }
 
-    // Modify daemon service file
-    modify_daemon_service(dry_run)?;
-
     println!();
-    println!("OpenClaw configured successfully!");
-    println!();
-    println!("Backups created:");
-    println!(
-        "  - {}.pre-clawproxy",
-        openclaw_config_path.display()
-    );
-    println!();
-    println!("Next steps:");
-    println!("  1. Start clawproxy: clawproxy start");
-    println!("  2. Restart OpenClaw");
+    println!("OpenClaw configured for clawproxy.");
+    println!("Restart OpenClaw to apply changes.");
 
     Ok(())
 }
@@ -768,18 +741,17 @@ fn backup_file(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn revert_openclaw_config(openclaw_config_path: &Path) -> anyhow::Result<()> {
+fn revert_openclaw_config(
+    openclaw_config_path: &Path,
+    auth_profiles_path: &Path,
+) -> anyhow::Result<()> {
     let mut reverted_any = false;
 
     if revert_from_backup(openclaw_config_path)? {
         reverted_any = true;
     }
 
-    // Also revert auth-profiles.json if backup exists
-    let auth_profiles_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
-        .join(".openclaw/main/agent/auth-profiles.json");
-    if revert_from_backup(&auth_profiles_path)? {
+    if revert_from_backup(auth_profiles_path)? {
         reverted_any = true;
     }
 
@@ -787,9 +759,7 @@ fn revert_openclaw_config(openclaw_config_path: &Path) -> anyhow::Result<()> {
         anyhow::bail!("No backups found. Nothing to revert.");
     }
 
-    revert_daemon_service()?;
-
-    println!("OpenClaw configuration reverted successfully");
+    println!("OpenClaw configuration reverted. Restart OpenClaw to apply.");
     Ok(())
 }
 
@@ -812,124 +782,4 @@ fn revert_from_backup(path: &Path) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-fn modify_daemon_service(dry_run: bool) -> anyhow::Result<()> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-    let clawproxy_run_path = std::env::current_exe()
-        .unwrap_or_else(|_| PathBuf::from("/usr/local/bin/clawproxy"))
-        .parent()
-        .map(|p| p.join("clawproxy-run"))
-        .unwrap_or_else(|| PathBuf::from("/usr/local/bin/clawproxy-run"));
-
-    if cfg!(target_os = "macos") {
-        let plist_path = home.join("Library/LaunchAgents/ai.openclaw.gateway.plist");
-        if !plist_path.exists() {
-            println!("OpenClaw daemon plist not found at {}, skipping", plist_path.display());
-            return Ok(());
-        }
-
-        if dry_run {
-            println!("[Dry run] Would modify daemon: {}", plist_path.display());
-            println!("  Would wrap ProgramArguments with clawproxy-run");
-            return Ok(());
-        }
-
-        let content = fs::read_to_string(&plist_path)?;
-        backup_file(&plist_path)?;
-
-        // Simple approach: replace the ProgramArguments to wrap with clawproxy-run
-        // Look for the existing command and wrap it
-        if content.contains("clawproxy-run") {
-            println!("Daemon already configured for clawproxy-run, skipping");
-            return Ok(());
-        }
-
-        // Replace the executable path in the plist to use clawproxy-run
-        // This is a simplified approach — we wrap the existing command
-        let modified = content.replace(
-            "<string>openclaw</string>",
-            &format!(
-                "<string>{}</string>\n        <string>-c</string>\n        <string>openclaw</string>",
-                clawproxy_run_path.display()
-            ),
-        );
-
-        if modified == content {
-            println!(
-                "Could not find openclaw command in plist to wrap. \
-                 You may need to manually update {}",
-                plist_path.display()
-            );
-        } else {
-            fs::write(&plist_path, modified)?;
-            println!("Updated daemon plist to use clawproxy-run");
-        }
-    } else if cfg!(target_os = "linux") {
-        let service_path = home.join(".config/systemd/user/openclaw-gateway.service");
-        if !service_path.exists() {
-            println!(
-                "OpenClaw daemon service not found at {}, skipping",
-                service_path.display()
-            );
-            return Ok(());
-        }
-
-        if dry_run {
-            println!("[Dry run] Would modify daemon: {}", service_path.display());
-            return Ok(());
-        }
-
-        let content = fs::read_to_string(&service_path)?;
-        backup_file(&service_path)?;
-
-        if content.contains("clawproxy-run") {
-            println!("Daemon already configured for clawproxy-run, skipping");
-            return Ok(());
-        }
-
-        // Wrap ExecStart with clawproxy-run -c "original command"
-        let mut modified = String::new();
-        for line in content.lines() {
-            if line.starts_with("ExecStart=") {
-                let original_cmd = line.trim_start_matches("ExecStart=");
-                modified.push_str(&format!(
-                    "ExecStart={} -c \"{}\"",
-                    clawproxy_run_path.display(),
-                    original_cmd
-                ));
-            } else {
-                modified.push_str(line);
-            }
-            modified.push('\n');
-        }
-
-        fs::write(&service_path, modified)?;
-        println!("Updated systemd service to use clawproxy-run");
-    }
-
-    Ok(())
-}
-
-fn revert_daemon_service() -> anyhow::Result<()> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-
-    if cfg!(target_os = "macos") {
-        let plist_path = home.join("Library/LaunchAgents/ai.openclaw.gateway.plist");
-        let backup = plist_path.with_extension("plist.pre-clawproxy");
-        if backup.exists() {
-            fs::copy(&backup, &plist_path)?;
-            fs::remove_file(&backup)?;
-            println!("Reverted daemon plist");
-        }
-    } else if cfg!(target_os = "linux") {
-        let service_path = home.join(".config/systemd/user/openclaw-gateway.service");
-        let backup = service_path.with_extension("service.pre-clawproxy");
-        if backup.exists() {
-            fs::copy(&backup, &service_path)?;
-            fs::remove_file(&backup)?;
-            println!("Reverted systemd service");
-        }
-    }
-
-    Ok(())
-}
 
