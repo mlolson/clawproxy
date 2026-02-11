@@ -1,27 +1,29 @@
-# Auth Proxy
+# ClawProxy
 
-A lightweight HTTP proxy that injects authentication credentials into outbound API requests. Designed for AI agents running in sandboxed environments (like Docker containers) that need to make authenticated API calls without having direct access to secrets.
+> **Warning:** Automatic configuration via OpenClaw is still not working. You will need to manually configure ClawProxy for now.
+
+A lightweight HTTP proxy that injects authentication credentials into outbound API requests. Designed to run alongside [OpenClaw](https://github.com/openclaw) to provide AI agents in sandboxed environments (like Docker containers) with authenticated API access without exposing secrets directly.
 
 ## How It Works
 
 ```
-┌─────────────────────────────────────────┐
-│  Agent Container                        │
-│                                         │
-│  POST /v1/chat/completions              │
-│  X-Upstream-Host: api.openai.com        │
-│  Authorization: Bearer PROXY:openai     │
-└──────────────────┬──────────────────────┘
+┌─────────────────────────────────────┐
+│  Agent Container                    │
+│                                     │
+│  POST /v1/chat/completions          │
+│  X-Upstream-Host: api.openai.com    │
+│  Authorization: Bearer PROXY:openai │
+└──────────────────┬──────────────────┘
                    │
                    ▼
-┌─────────────────────────────────────────┐
-│  Auth Proxy (host machine)              │
-│                                         │
-│  1. Read X-Upstream-Host header         │
-│  2. Validate against allowlist          │
-│  3. Substitute PROXY:openai → sk-xxx    │
-│  4. Forward to api.openai.com           │
-└──────────────────┬──────────────────────┘
+┌─────────────────────────────────────┐
+│  ClawProxy (host machine)           │
+│                                     │
+│  1. Read X-Upstream-Host header     │
+│  2. Validate against allowlist      │
+│  3. Substitute PROXY:openai → sk-xx │
+│  4. Forward to api.openai.com       │
+└──────────────────┬──────────────────┘
                    │
                    ▼
             ┌─────────────┐
@@ -48,37 +50,37 @@ source ~/.cargo/env
 ### 2. Build
 
 ```bash
-cd authproxy
+cd clawproxy
 cargo build --release
 ```
 
 ### 3. Initialize Configuration
 
 ```bash
-./target/release/authproxy init
+./target/release/clawproxy init
 ```
 
 This creates:
-- `~/.config/authproxy/config.yaml` - proxy configuration
-- `~/.config/authproxy/secrets/` - directory for API keys
+- `~/.config/clawproxy/config.yaml` - proxy configuration
+- `~/.config/clawproxy/secrets/` - directory for API keys
 
 ### 4. Add Your API Keys
 
 ```bash
 # OpenAI
-echo 'sk-your-openai-key' | ./target/release/authproxy secret set openai
+echo 'sk-your-openai-key' | ./target/release/clawproxy secret set openai
 
 # Anthropic
-echo 'sk-ant-your-anthropic-key' | ./target/release/authproxy secret set anthropic
+echo 'sk-ant-your-anthropic-key' | ./target/release/clawproxy secret set anthropic
 
 # Or interactively
-./target/release/authproxy secret set openai
+./target/release/clawproxy secret set openai
 ```
 
 ### 5. Start the Proxy
 
 ```bash
-./target/release/authproxy start
+./target/release/clawproxy start
 ```
 
 The proxy listens on `127.0.0.1:8080` by default.
@@ -144,58 +146,58 @@ client = OpenAI(
 
 ## CLI Reference
 
-### `authproxy start`
+### `clawproxy start`
 
 Start the proxy server.
 
 ```bash
-authproxy start [OPTIONS]
+clawproxy start [OPTIONS]
 
 Options:
-  -c, --config <PATH>  Path to config file (default: ~/.config/authproxy/config.yaml)
+  -c, --config <PATH>  Path to config file (default: ~/.config/clawproxy/config.yaml)
   -p, --port <PORT>    Override listen port
 ```
 
-### `authproxy init`
+### `clawproxy init`
 
 Initialize the configuration directory with example config.
 
 ```bash
-authproxy init
+clawproxy init
 ```
 
-### `authproxy secret set <NAME>`
+### `clawproxy secret set <NAME>`
 
 Set a secret. Reads the value from stdin.
 
 ```bash
 # From pipe
-echo 'sk-xxx' | authproxy secret set openai
+echo 'sk-xxx' | clawproxy secret set openai
 
 # Interactive
-authproxy secret set openai
+clawproxy secret set openai
 ```
 
-### `authproxy secret list`
+### `clawproxy secret list`
 
 List configured secrets (values are masked).
 
 ```bash
-authproxy secret list
+clawproxy secret list
 ```
 
-### `authproxy secret delete <NAME>`
+### `clawproxy secret delete <NAME>`
 
 Delete a secret.
 
 ```bash
-authproxy secret delete openai
-authproxy secret delete openai --force  # Skip confirmation
+clawproxy secret delete openai
+clawproxy secret delete openai --force  # Skip confirmation
 ```
 
 ## Configuration
 
-Configuration file: `~/.config/authproxy/config.yaml`
+Configuration file: `~/.config/clawproxy/config.yaml`
 
 ```yaml
 listen:
@@ -226,10 +228,10 @@ token_pattern: "PROXY:([a-zA-Z0-9_-]+)"
 
 ### Secrets
 
-Secrets are stored as individual files in `~/.config/authproxy/secrets/`:
+Secrets are stored as individual files in `~/.config/clawproxy/secrets/`:
 
 ```
-~/.config/authproxy/secrets/
+~/.config/clawproxy/secrets/
 ├── openai      # Contains: sk-xxxxxxxx
 ├── anthropic   # Contains: sk-ant-xxxxxxxx
 └── github      # Contains: ghp_xxxxxxxx
@@ -277,7 +279,7 @@ docker build -f Dockerfile.agent -t agent .
 
 ```bash
 # Start proxy on host first
-authproxy start
+clawproxy start
 
 # Run agent container
 cd docker
@@ -341,13 +343,13 @@ docker run --rm alpine ping host.docker.internal
 
 Verify the secret exists:
 ```bash
-authproxy secret list
+clawproxy secret list
 ```
 
 ### Enable debug logging
 
 ```bash
-RUST_LOG=debug authproxy start
+RUST_LOG=debug clawproxy start
 ```
 
 ## License
