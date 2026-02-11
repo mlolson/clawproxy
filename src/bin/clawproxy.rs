@@ -607,6 +607,9 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
                     "baseUrl".to_string(),
                     serde_json::Value::String(new_base_url),
                 );
+                if !obj.contains_key("models") {
+                    obj.insert("models".to_string(), serde_json::json!([]));
+                }
             }
         } else {
             providers.insert(
