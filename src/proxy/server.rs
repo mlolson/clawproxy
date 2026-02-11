@@ -80,14 +80,17 @@ async fn forward_request(
     state: &AppState,
     request: Request<Body>,
 ) -> std::result::Result<Response<Body>, ProxyError> {
+    let method = request.method().clone();
     let path = request.uri().path().to_string();
     let query = request.uri().query().map(|q| q.to_string());
+
+    tracing::info!(%method, %path, "Request received");
 
     // Match the request path to a configured service
     let (service_name, service) = router::match_service(&path, &state.config.services)
         .ok_or_else(|| ProxyError::UnknownService(path.clone()))?;
 
-    tracing::debug!(service = service_name, path = %path, "Matched service");
+    tracing::info!(service = service_name, %path, "Matched service");
 
     // Build the upstream URL with rewritten path
     let upstream_url = router::build_upstream_url(service, &path, query.as_deref());

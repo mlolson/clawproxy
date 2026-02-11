@@ -646,7 +646,7 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
                 let mut seen = std::collections::HashSet::new();
                 ids.iter()
                     .filter(|id| seen.insert(id.to_string()))
-                    .map(|id| serde_json::json!({ "id": id }))
+                    .map(|id| serde_json::json!({ "id": id, "name": id }))
                     .collect()
             })
             .unwrap_or_default();
