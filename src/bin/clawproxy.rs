@@ -611,7 +611,7 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
         } else {
             providers.insert(
                 provider_name.to_string(),
-                serde_json::json!({ "baseUrl": new_base_url }),
+                serde_json::json!({ "baseUrl": new_base_url, "models": [] }),
             );
         }
 
