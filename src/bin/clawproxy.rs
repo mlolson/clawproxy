@@ -570,6 +570,7 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
     let mut config: serde_json::Value = serde_json::from_str(&config_content)?;
 
     let mut migrated_keys: Vec<(String, String)> = Vec::new();
+    let mut redirected_providers: Vec<String> = Vec::new();
 
     // Process each provider
     if let Some(providers) = config
@@ -579,17 +580,14 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
     {
         for (provider_name, provider_config) in providers.iter_mut() {
             if let Some(obj) = provider_config.as_object_mut() {
-                // Extract existing API key if present
                 let existing_key = obj
                     .get("apiKey")
                     .and_then(|v| v.as_str())
                     .filter(|k| !k.is_empty())
                     .map(|k| k.to_string());
 
-                // Map provider to clawproxy service prefix
                 let service_prefix = format!("/{}", provider_name);
 
-                // Check if we have a matching service in clawproxy config
                 let matching_service = clawproxy_config
                     .services
                     .values()
@@ -607,6 +605,7 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
                         serde_json::Value::String("PROXY".to_string()),
                     );
 
+                    redirected_providers.push(provider_name.clone());
                     if let Some(key) = existing_key {
                         migrated_keys.push((provider_name.clone(), key));
                     }
@@ -618,17 +617,11 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
     let new_content = serde_json::to_string_pretty(&config)?;
 
     if dry_run {
-        // Show unified diff between current and new config
-        println!("--- {}", openclaw_config_path.display());
-        println!("+++ {} (after configure-openclaw)", openclaw_config_path.display());
-        for diff in diff_lines(&config_content, &new_content) {
-            println!("{}", diff);
+        for name in &redirected_providers {
+            println!("Redirect {} -> {}/{}", name, proxy_url, name);
         }
-        if !migrated_keys.is_empty() {
-            println!();
-            for (name, _) in &migrated_keys {
-                println!("Would migrate API key for '{}' to clawproxy secret", name);
-            }
+        for (name, _) in &migrated_keys {
+            println!("Migrate {} API key to clawproxy secret", name);
         }
         return Ok(());
     }
@@ -845,26 +838,3 @@ fn revert_daemon_service() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Simple line-by-line diff producing unified-style output.
-fn diff_lines(old: &str, new: &str) -> Vec<String> {
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
-    let mut result = Vec::new();
-
-    let max = old_lines.len().max(new_lines.len());
-    for i in 0..max {
-        let old_line = old_lines.get(i).copied();
-        let new_line = new_lines.get(i).copied();
-        match (old_line, new_line) {
-            (Some(o), Some(n)) if o == n => result.push(format!(" {}", o)),
-            (Some(o), Some(n)) => {
-                result.push(format!("-{}", o));
-                result.push(format!("+{}", n));
-            }
-            (Some(o), None) => result.push(format!("-{}", o)),
-            (None, Some(n)) => result.push(format!("+{}", n)),
-            (None, None) => {}
-        }
-    }
-    result
-}
