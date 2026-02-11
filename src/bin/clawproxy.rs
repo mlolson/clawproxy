@@ -596,46 +596,39 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
                     .find(|s| s.prefix == service_prefix);
 
                 if let Some(_service) = matching_service {
-                    // Update baseUrl to go through proxy
                     let new_base_url = format!("{}{}", proxy_url, service_prefix);
 
-                    if dry_run {
-                        println!("[Dry run] {} provider:", provider_name);
-                        if let Some(old_url) = obj.get("baseUrl").and_then(|v| v.as_str()) {
-                            println!("  baseUrl: {} -> {}", old_url, new_base_url);
-                        }
-                        if existing_key.is_some() {
-                            println!(
-                                "  apiKey: would migrate to clawproxy secret '{}'",
-                                provider_name
-                            );
-                        }
-                        println!("  apiKey: would set to 'PROXY' (placeholder)");
-                    } else {
-                        obj.insert(
-                            "baseUrl".to_string(),
-                            serde_json::Value::String(new_base_url),
-                        );
-                        obj.insert(
-                            "apiKey".to_string(),
-                            serde_json::Value::String("PROXY".to_string()),
-                        );
+                    obj.insert(
+                        "baseUrl".to_string(),
+                        serde_json::Value::String(new_base_url),
+                    );
+                    obj.insert(
+                        "apiKey".to_string(),
+                        serde_json::Value::String("PROXY".to_string()),
+                    );
 
-                        if let Some(key) = existing_key {
-                            migrated_keys.push((provider_name.clone(), key));
-                        }
+                    if let Some(key) = existing_key {
+                        migrated_keys.push((provider_name.clone(), key));
                     }
                 }
             }
         }
     }
 
+    let new_content = serde_json::to_string_pretty(&config)?;
+
     if dry_run {
-        println!();
-        println!("[Dry run] Would modify:");
-        println!("  - {}", openclaw_config_path.display());
+        // Show unified diff between current and new config
+        println!("--- {}", openclaw_config_path.display());
+        println!("+++ {} (after configure-openclaw)", openclaw_config_path.display());
+        for diff in diff_lines(&config_content, &new_content) {
+            println!("{}", diff);
+        }
         if !migrated_keys.is_empty() {
-            println!("  - Would migrate {} API keys to clawproxy secrets", migrated_keys.len());
+            println!();
+            for (name, _) in &migrated_keys {
+                println!("Would migrate API key for '{}' to clawproxy secret", name);
+            }
         }
         return Ok(());
     }
@@ -665,10 +658,7 @@ fn cmd_configure_openclaw(dry_run: bool, revert: bool) -> anyhow::Result<()> {
 
     // Backup and write config
     backup_file(&openclaw_config_path)?;
-    fs::write(
-        &openclaw_config_path,
-        serde_json::to_string_pretty(&config)?,
-    )?;
+    fs::write(&openclaw_config_path, &new_content)?;
 
     // Modify daemon service file
     modify_daemon_service(dry_run)?;
@@ -853,4 +843,28 @@ fn revert_daemon_service() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Simple line-by-line diff producing unified-style output.
+fn diff_lines(old: &str, new: &str) -> Vec<String> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let mut result = Vec::new();
+
+    let max = old_lines.len().max(new_lines.len());
+    for i in 0..max {
+        let old_line = old_lines.get(i).copied();
+        let new_line = new_lines.get(i).copied();
+        match (old_line, new_line) {
+            (Some(o), Some(n)) if o == n => result.push(format!(" {}", o)),
+            (Some(o), Some(n)) => {
+                result.push(format!("-{}", o));
+                result.push(format!("+{}", n));
+            }
+            (Some(o), None) => result.push(format!("-{}", o)),
+            (None, Some(n)) => result.push(format!("+{}", n)),
+            (None, None) => {}
+        }
+    }
+    result
 }
