@@ -1,7 +1,5 @@
 # ClawProxy
 
-> **Warning:** This is a learning project, use at your own risk. I still haven't successfully configured OpenClaw to work with it. If you are hoping for it to work out of the box you might be disappointed.
-
 A lightweight HTTP proxy that injects authentication credentials into outbound API requests. Designed to run alongside [OpenClaw](https://github.com/openclaw) to provide AI agents in sandboxed environments (like Docker containers) with authenticated API access without exposing secrets directly.
 
 ## How It Works
